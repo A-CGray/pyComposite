@@ -5,12 +5,18 @@
 
 import numpy as np
 from . import pyCompTransform as transforms
+from . import FailureCriteria
 import warnings
 
 
 class lamina(object):
     def __init__(self, matPropDict):
         self.MatProps = matPropDict
+
+        # --- If user provided only one strength for 1 or 2 direction, covert to equal tensile and compressive strengths ---
+        for dir in [1, 2]:
+            if f"S{dir}" in self.MatProps.keys() and not (self.MatProps.keys() >= [f"S{dir}T", f"S{dir}C"]):
+                self.MatProps.update({f"S{dir}T": self.MatProps[f"S{dir}"], f"S{dir}C": self.MatProps[f"S{dir}"]})
 
     @property
     def QMat(self):
@@ -100,6 +106,40 @@ class lamina(object):
             return self.SMat
         else:
             return transforms.TransformComplianceMat(self.SMat, theta)
+
+    def TsaiHillCriteria(self, Sigma):
+        """Compute the Tsai-Hill failure criteria for the lamina under a given stress state
+
+        [extended_summary]
+
+        Parameters
+        ----------
+        Sigma : array
+            The lamina stress state in the material frame.
+
+        Returns
+        -------
+        Fail : float
+            The Tsai-Hill failure criteria value, Fail > 1 indicates failure.
+        """
+
+        # --- Figure out which strength values to use based on signs of stresses ---
+        try:
+            if Sigma[0] >= 0.0:
+                S1 = self.MatProps["S1T"]
+            else:
+                S1 = self.MatProps["S1C"]
+            if Sigma[1] >= 0.0:
+                S2 = self.MatProps["S2T"]
+            else:
+                S2 = self.MatProps["S2C"]
+            return FailureCriteria.TsaiHill(Sigma[0], Sigma[1], Sigma[2], S1, S2, self.MatProps["S12"])
+
+        except KeyError:
+            warnings.warn(
+                "No strength properties defined for this laminate, ensure either S1, S2 and S12 or S1T, S1C, S2T, S2C and S12 are defined in the material property dictionary for this lamina"
+            )
+            return 0.0
 
 
 if __name__ == "__main__":
