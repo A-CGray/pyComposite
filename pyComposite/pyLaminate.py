@@ -27,7 +27,7 @@ from . import pyCompTransform as transforms
 
 class laminate(object):
     def __init__(self, plies, plyAngles, plyThicknesses, symmetric=True):
-        """[summary]
+        """Create a model of a composite laminate, consisting of multiple composite lamina
 
         [extended_summary]
 
@@ -44,7 +44,7 @@ class laminate(object):
         """
 
         # First, create a list of the laminae, ply angles and ply thicknesses ignoring whether it is symmetric or not for now
-        self.plyAngles = plyAngles
+        self.plyAngles = copy.deepcopy(plyAngles)
 
         if isinstance(plies, list):
             if len(plies) != len(plyAngles):
@@ -71,43 +71,63 @@ class laminate(object):
             for prop in [self.plies, self.plyThicknesses, self.plyAngles]:
                 prop += prop[::-1]
 
-        # COnvert thicknesses and angles to numpy arrays
+        # Convert thicknesses and angles to numpy arrays
         self.plyThicknesses = np.array(self.plyThicknesses)
         self.plyAngles = np.array(self.plyAngles)
 
-        # Now compute the total thickness and z coordinates for each ply
-        self.totalThickness = np.sum(self.plyThicknesses)
-        self.zPlies = np.array([-self.totalThickness / 2.0])
-        self.zPlies = np.concatenate((self.zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
+        @property
+        def totalThickness(self):
+            """Return the total thickness of the laminate"""
+            return np.sum(self.plyThicknesses)
+
+        @property
+        def zPlies(self):
+            """Compute the z coordinates of the start and end of each ply
+
+            z = 0 is the top surface of the laminate
+
+            Returns
+            -------
+            [type]
+                [description]
+            """
+            zPlies = np.array([-self.totalThickness / 2.0])
+            return np.concatenate((self.zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
 
     def computeCLTMat(self, matType="A", thermal=False):
         """Compute one of the laminate stiffness matrices
 
-        This function can be used to create the A, B and D matrices
+        This function can be used to create the A, B and D matrices of the laminate, or by enabling the 'thermal'
+        option, the thermal load vectors NT and MT.
 
         Parameters
         ----------
         matType : str, optional
-            [description], by default "A"
+            Which laminate matrix to compute, with the 'thermal' option enabled, 'A' will compute the thermal force
+            vector NT and 'B' will compute the thermal moment vector MT, by default "A"
         thermal : bool, optional
-            [description], by default False
+            set True to compute thermal force or moment vector as opposed to A, B or D matrix, by default False
 
         Returns
         -------
-        [type]
-            [description]
+        array
+            The matrix or vector requested
         """
+
         Mat = np.zeros(3) if thermal else np.zeros((3, 3))
-        nDict = {"A": 1.0, "B": 2.0, "D": 3.0}
-        n = nDict[matType.upper()]
+
+        n = 1.0 if matType.upper() == "A" else 2.0 if matType.upper() == "B" else 3.0
 
         for i in range(len(self.plies)):
             ply = self.plies[i]
             angle = np.deg2rad(self.plyAngles[i])
             QBar = ply.getQBar(angle)
+
             if thermal:
                 QBar = QBar @ transforms.TransformStrain(ply.CTEVec, -angle)
+
             Mat += 1 / n * QBar * (self.zPlies[i + 1] ** n - self.zPlies[i] ** n)
+
         return Mat
 
     def computeCLTStarMats(self):
@@ -170,31 +190,50 @@ class laminate(object):
     def CTEVec(self):
         return np.dot(self.EMatInv, self.NMTVec)
 
+    @property
+    def flexModulii(self):
+        "Return a vector containing the 3 flexural modulii of the panel, E_fx, E_fy and E_fxy"
+        return 12.0 / (self.totalThickness ** 3 * np.diagonal(self.DPrimeMat))
 
-if __name__ == "__main__":
-    from pyLamina import lamina
+    @property
+    def inPlaneModulii(self):
+        "Return a vector containing the 3 in-Plane modulii of the panel, E_x, E_y and G_xy"
+        return 1.0 / (self.totalThickness * np.diagonal(self.APrimeMat))
 
-    LaminaProps = {
-        "E1": 138.0,
-        "E2": 9.0,
-        "v12": 0.3,
-        "G12": 6.9,
-        "CTE1": -0.3e-6,
-        "CTE2": 28.1e-6,
-    }
+    def computeLaminateStrain(self, N=None, M=None, deltaT=0.0):
+        """Compute mid-plane strain and curvature in laminate under given mechanical and thermal load
 
-    ply = lamina(LaminaProps)
-    print(f"QMat = \n{ply.QMat}\n")
-    print(f"SMat = \n{ply.SMat}\n")
+        Parameters
+        ----------
+        N : array, optional
+            applied force vector N, in units of force/distance, by default None, which is taken to mean no load is applied
+        M : array, optional
+            Applied moment vector M, in units of force, by default None, which is taken to mean no moment is applied
+        deltaT : float, optional
+            Temperature change, used to compute thermal expansion loads, by default 0.
 
-    angles = [45.0, -45.0]
-    plyThick = 0.25
-    Lam = laminate(ply, angles, plyThick, symmetric=False)
+        Returns
+        -------
+        e : array
+            Mid-plane strains, [e_x, e_y, gamma_xy]
+        k : array
+            Mid-plane curvatures, [kappa_x, kappa_y, kappa_xy]
+        """
+        NMVec = np.zeros(6)
+        if N is not None:
+            NMVec[:3] = N
+        if M is not None:
+            NMVec[3:] = M
+        if deltaT != 0.0:
+            NMVec += deltaT * self.NMTVec
 
-    print(f"Ply thicknesses = \n{Lam.plyThicknesses}\n")
-    print(f"Ply angles = \n{Lam.plyAngles}\n")
-    print(f"A Matrix = \n{Lam.AMat}\n")
-    print(f"B Matrix = \n{Lam.BMat}\n")
-    print(f"D Matrix = \n{Lam.DMat}\n")
-    print(f"NT Vector = \n{Lam.NTVec}\n")
-    print(f"MT Vector = \n{Lam.MTVec}\n")
+        ekVec = self.EMat @ NMVec
+        e = np.copy(ekVec[:3])
+        k = np.copy(ekVec[3:])
+        return e, k
+
+    # TODO: Implement failure criteria calculations (new class/file)
+    # TODO: Compute uniaxial failure:
+    # Compute laminate strain under normalised version of stress
+    # Compute strain and then stress in each ply
+    #
