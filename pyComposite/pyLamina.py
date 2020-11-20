@@ -2,7 +2,7 @@
 
 [extended_summary]
 """
-
+import copy
 import numpy as np
 from . import pyCompTransform as transforms
 from . import FailureCriteria
@@ -11,7 +11,7 @@ import warnings
 
 class lamina(object):
     def __init__(self, matPropDict):
-        self.MatProps = matPropDict
+        self.MatProps = copy.deepcopy(matPropDict)
 
         # --- If user provided only one strength for 1 or 2 direction, covert to equal tensile and compressive strengths ---
         for dir in [1, 2]:
