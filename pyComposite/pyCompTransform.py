@@ -30,7 +30,8 @@ def TMatInvT(theta):
 def TransformStrain(strain, theta):
     """Rotate a state of 2D strain through and angle theta
 
-    This method assumes the input strain uses engineering shear strain. It thus converts to tensor shear strain before transforming and then converts back to engineering shear before returning the strain state
+    This method assumes the input strain uses engineering shear strain. It thus converts to tensor shear strain before
+    transforming and then converts back to engineering shear before returning the strain state
 
     Parameters
     ----------
@@ -44,10 +45,7 @@ def TransformStrain(strain, theta):
     transformedStrain : array
         Strain in the rotated coordinate frame, [e1', e2', gamma_12']
     """
-    # transformedStrain = np.copy(strain)
-    # transformedStrain[-1] *= 0.5
-    # transformedStrain[:] = np.dot(TMat(theta), transformedStrain)
-    # transformedStrain[-1] *= 2
+
     return np.dot(TMatInvT(theta), strain)
 
 

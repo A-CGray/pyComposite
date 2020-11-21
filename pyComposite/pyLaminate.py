@@ -75,6 +75,10 @@ class laminate(object):
         self.plyThicknesses = np.array(self.plyThicknesses)
         self.plyAngles = np.array(self.plyAngles)
 
+        # Create a list of failure flags for each ply, these can be used to exclude the contribution of a ply to the
+        # laminate stiffness
+        self.plyFailed = [False for i in self.plyAngles]
+
         @property
         def totalThickness(self):
             """Return the total thickness of the laminate"""
@@ -92,7 +96,7 @@ class laminate(object):
                 [description]
             """
             zPlies = np.array([-self.totalThickness / 2.0])
-            return np.concatenate((self.zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
+            return np.concatenate((zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
 
     def computeCLTMat(self, matType="A", thermal=False):
         """Compute one of the laminate stiffness matrices
@@ -119,14 +123,15 @@ class laminate(object):
         n = 1.0 if matType.upper() == "A" else 2.0 if matType.upper() == "B" else 3.0
 
         for i in range(len(self.plies)):
-            ply = self.plies[i]
-            angle = np.deg2rad(self.plyAngles[i])
-            QBar = ply.getQBar(angle)
+            if not self.plyFailed[i]:
+                ply = self.plies[i]
+                angle = np.deg2rad(self.plyAngles[i])
+                QBar = ply.getQBar(angle)
 
-            if thermal:
-                QBar = QBar @ transforms.TransformStrain(ply.CTEVec, -angle)
+                if thermal:
+                    QBar = QBar @ transforms.TransformStrain(ply.CTEVec, -angle)
 
-            Mat += 1 / n * QBar * (self.zPlies[i + 1] ** n - self.zPlies[i] ** n)
+                Mat += 1 / n * QBar * (self.zPlies[i + 1] ** n - self.zPlies[i] ** n)
 
         return Mat
 
@@ -232,8 +237,109 @@ class laminate(object):
         k = np.copy(ekVec[3:])
         return e, k
 
-    # TODO: Implement failure criteria calculations (new class/file)
-    # TODO: Compute uniaxial failure:
-    # Compute laminate strain under normalised version of stress
-    # Compute strain and then stress in each ply
-    #
+    def computeStrainAtZ(self, z, e=None, k=None):
+        """Calculate the strain at a given height within the laminate based on the mid-plane strains and curvatures
+
+        Parameters
+        ----------
+        z : float or array
+            Through thickness coordinate at which to compute strain, where z=0 is the laminate mid-plane and z=-t/2 is the top surface
+        e : array, optional
+            Mid-plane laminate strains, by default None, which case mid-plane strains will be taken to be zero
+        k : array, optional
+            Mid-plane laminate curvatures, by default None, which case mid-plane curvatures will be taken to be zero
+
+        Returns
+        -------
+        strains : arrays
+            2D array where each row is 2D strain state [e_x, e_y, gamma_xy] at the corresponding z coordinate
+        """
+
+        if e is None:
+            e = np.zeros(3)
+        if k is None:
+            k = np.zeros(3)
+        return e + np.outer(z, k)
+
+    def computeUltimateLoadFactors(self, N=None, M=None, printResults=False):
+        """Perform a sequential failure analysis on the laminate for a given loading
+
+        Given a specific force and moment vector, this function will compute the complete failure history of the laminate.
+        This is done by computing the scaling of the given load under which failure occurs in any of the plies, then removing
+        this ply's contribution to the stiffness of the laminate and repeating the process until all plies have failed.
+
+        Parameters
+        ----------
+        N : array, optional
+            applied force vector N, in units of force/distance, by default None, which is taken to mean no load is applied
+        M : array, optional
+            Applied moment vector M, in units of force, by default None, which is taken to mean no moment is applied
+
+        Returns
+        -------
+        loadFactors : list
+            The load factors at which each failure event occurs
+        plyFailures : list of lists
+            A list containing lists of the plies which fail at each failure event
+        laminateStrains : list of arrays
+            A list containing the laminate mid-plane strains and curvatures at each failure point
+        """
+        loadFactors = []
+        plyFailures = []
+        laminateStrains = []
+
+        startFailedPlies = copy.deepcopy(self.plyFailed)
+
+        if printResults:
+            print("Laminate failure analysis:")
+            print("--------------------------")
+            print("Starting with these plies already failed:")
+            print(startFailedPlies)
+
+        n = 0
+        while not all(self.plyFailed):
+
+            n += 1
+
+            # Compute laminate strains
+            e, k = self.computeLaminateStrain(N, M)
+
+            # compute strains at all the ply z coordinates
+            strains = self.computeStrainAtZ(self.zPlies, e, k)
+
+            # Compute safety factor at top and bottom edge of all plies and take minimum
+            plySafetyFactors = []
+            for i in range(len(self.plies)):
+                if not self.plyFailed[i]:
+                    ply = self.plies[i]
+                    theta = np.deg2rad(self.plyAngles[i])
+                    plyFailure = 1e6
+                    for j in [i.i + 1]:
+                        laminaFrameStrain = transforms.TransformStrain(strains[j], theta)
+                        laminaFrameStress = ply.QMat @ laminaFrameStrain
+                        plyFailure = min(plyFailure, ply.TsaiHillCriteria(laminaFrameStress, returnSafetyFactor=True))
+                    plySafetyFactors.append(plyFailure)
+                else:
+                    plySafetyFactors.append(np.inf)
+
+            # Find lamina with lowest load factor (may be multiple) and their fail flag to true
+            minSafetyFactor = np.min(plySafetyFactors)
+            failingPlies = np.where(plySafetyFactors == minSafetyFactor)
+            self.plyFailed[failingPlies] = True
+
+            # Save the load factor at which these ply failures will occur, which plies fail, and the laminate strain
+            loadFactors.append(minSafetyFactor)
+            plyFailures.append(failingPlies)
+            laminateStrains.append(np.concatenate((e, k)) * minSafetyFactor)
+
+            if printResults:
+                print(f"\nFailure Stage {n}:")
+                print(f"Load Factor: {loadFactors[-1]}")
+                print(f"Failing Plies {plyFailures[-1]}")
+                print(f"Mid-Plane Strains at failure: {laminateStrains[-1][:3]}")
+                print(f"Mid-Plane Curvatures at failure: {laminateStrains[-1][3:]}")
+
+        # Before exiting, reset the ply failure flags to whatever they were before this analysis
+        self.plyFailed = startFailedPlies
+
+        return loadFactors, plyFailures, laminateStrains

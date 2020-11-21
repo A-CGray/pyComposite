@@ -1,12 +1,35 @@
-"""pyLamina: a class representing a single orthotropic lamina
-
-[extended_summary]
 """
+==============================================================================
+pyLamina: a class representing a single orthotropic lamina
+==============================================================================
+@File    :   pyLamina.py
+@Date    :   2020/11/20
+@Author  :   Alasdair Christison Gray
+@Description : This code implements the lamina class, which models a basic 2D orthotropic material.
+"""
+
+
+# ==============================================================================
+# Standard Python modules
+# ==============================================================================
 import copy
+import warnings
+
+# ==============================================================================
+# External Python modules
+# ==============================================================================
 import numpy as np
+
+# ==============================================================================
+# Extension modules
+# ==============================================================================
 from . import pyCompTransform as transforms
 from . import FailureCriteria
-import warnings
+
+# ==============================================================================
+# Wish List
+# ==============================================================================
+# TODO: Come up with a generic interface for all failure criteria, or at least one for strain-based and one for stress-based criteria
 
 
 class lamina(object):
@@ -107,7 +130,7 @@ class lamina(object):
         else:
             return transforms.TransformComplianceMat(self.SMat, theta)
 
-    def TsaiHillCriteria(self, Sigma):
+    def TsaiHillCriteria(self, Sigma, returnSafetyFactor=False):
         """Compute the Tsai-Hill failure criteria for the lamina under a given stress state
 
         [extended_summary]
@@ -133,7 +156,9 @@ class lamina(object):
                 S2 = self.MatProps["S2T"]
             else:
                 S2 = self.MatProps["S2C"]
-            return FailureCriteria.TsaiHill(Sigma[0], Sigma[1], Sigma[2], S1, S2, self.MatProps["S12"])
+            return FailureCriteria.TsaiHill(
+                Sigma[0], Sigma[1], Sigma[2], S1, S2, self.MatProps["S12"], returnSafetyFactor
+            )
 
         except KeyError:
             warnings.warn(
