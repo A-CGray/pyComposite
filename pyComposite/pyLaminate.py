@@ -24,6 +24,14 @@ import numpy as np
 # ==============================================================================
 from . import pyCompTransform as transforms
 
+# ==============================================================================
+# Wish List
+# ==============================================================================
+# TODO: Add visualisation methods for:
+# Polar stiffness plots
+# Stress strain curves
+# Ply orientations
+
 
 class laminate(object):
     def __init__(self, plies, plyAngles, plyThicknesses, symmetric=True):
