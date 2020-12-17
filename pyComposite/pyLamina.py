@@ -119,16 +119,10 @@ class lamina(object):
             return np.zeros(3)
 
     def getQBar(self, theta):
-        if theta % np.pi == 0:
-            return self.QMat
-        else:
-            return transforms.TransformStiffnessMat(self.QMat, theta)
+        return transforms.TransformStiffnessMat(self.QMat, theta)
 
     def getSBar(self, theta):
-        if theta % np.pi == 0:
-            return self.SMat
-        else:
-            return transforms.TransformComplianceMat(self.SMat, theta)
+        return transforms.TransformComplianceMat(self.SMat, theta)
 
     def TsaiHillCriteria(self, Sigma, returnSafetyFactor=False):
         """Compute the Tsai-Hill failure criteria for the lamina under a given stress state

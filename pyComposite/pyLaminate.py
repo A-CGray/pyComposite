@@ -87,24 +87,24 @@ class laminate(object):
         # laminate stiffness
         self.plyFailed = [False for i in self.plyAngles]
 
-        @property
-        def totalThickness(self):
-            """Return the total thickness of the laminate"""
-            return np.sum(self.plyThicknesses)
+    @property
+    def totalThickness(self):
+        """Return the total thickness of the laminate"""
+        return np.sum(self.plyThicknesses)
 
-        @property
-        def zPlies(self):
-            """Compute the z coordinates of the start and end of each ply
+    @property
+    def zPlies(self):
+        """Compute the z coordinates of the start and end of each ply
 
-            z = 0 is the top surface of the laminate
+        z = 0 is the top surface of the laminate
 
-            Returns
-            -------
-            [type]
-                [description]
-            """
-            zPlies = np.array([-self.totalThickness / 2.0])
-            return np.concatenate((zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
+        Returns
+        -------
+        [type]
+            [description]
+        """
+        zPlies = np.array([-self.totalThickness / 2.0])
+        return np.concatenate((zPlies, np.cumsum(self.plyThicknesses) - self.totalThickness / 2.0))
 
     def computeCLTMat(self, matType="A", thermal=False):
         """Compute one of the laminate stiffness matrices
@@ -133,7 +133,7 @@ class laminate(object):
         for i in range(len(self.plies)):
             if not self.plyFailed[i]:
                 ply = self.plies[i]
-                angle = np.deg2rad(self.plyAngles[i])
+                angle = self.plyAngles[i] * np.pi / 180.0
                 QBar = ply.getQBar(angle)
 
                 if thermal:
@@ -213,6 +213,16 @@ class laminate(object):
         "Return a vector containing the 3 in-Plane modulii of the panel, E_x, E_y and G_xy"
         return 1.0 / (self.totalThickness * np.diagonal(self.APrimeMat))
 
+    @property
+    def extensionShearCouplingRatios(self):
+        A = self.AMat
+        return np.array([A[0, -1] / A[0, 0], A[1, -1] / A[1, 1]])
+
+    @property
+    def bendTwistCouplingRatios(self):
+        D = self.DMat
+        return np.array([D[0, -1] / D[0, 0], D[1, -1] / D[1, 1]])
+
     def computeLaminateStrain(self, N=None, M=None, deltaT=0.0):
         """Compute mid-plane strain and curvature in laminate under given mechanical and thermal load
 
@@ -240,7 +250,7 @@ class laminate(object):
         if deltaT != 0.0:
             NMVec += deltaT * self.NMTVec
 
-        ekVec = self.EMat @ NMVec
+        ekVec = self.EMatInv @ NMVec
         e = np.copy(ekVec[:3])
         k = np.copy(ekVec[3:])
         return e, k
@@ -299,10 +309,11 @@ class laminate(object):
         startFailedPlies = copy.deepcopy(self.plyFailed)
 
         if printResults:
-            print("Laminate failure analysis:")
+            print("\nLaminate failure analysis:")
             print("--------------------------")
-            print("Starting with these plies already failed:")
-            print(startFailedPlies)
+            if any(self.plyFailed):
+                print("Starting with these plies already failed:")
+                print([i for i in range(len(self.plyFailed)) if self.plyFailed[i]])
 
         n = 0
         while not all(self.plyFailed):
@@ -322,7 +333,7 @@ class laminate(object):
                     ply = self.plies[i]
                     theta = np.deg2rad(self.plyAngles[i])
                     plyFailure = 1e6
-                    for j in [i.i + 1]:
+                    for j in [i, i + 1]:
                         laminaFrameStrain = transforms.TransformStrain(strains[j], theta)
                         laminaFrameStress = ply.QMat @ laminaFrameStrain
                         plyFailure = min(plyFailure, ply.TsaiHillCriteria(laminaFrameStress, returnSafetyFactor=True))
@@ -330,10 +341,15 @@ class laminate(object):
                 else:
                     plySafetyFactors.append(np.inf)
 
-            # Find lamina with lowest load factor (may be multiple) and their fail flag to true
-            minSafetyFactor = np.min(plySafetyFactors)
-            failingPlies = np.where(plySafetyFactors == minSafetyFactor)
-            self.plyFailed[failingPlies] = True
+            # Find lamina with lowest load factor (may be multiple) and set their fail flag to true
+            minSafetyFactor = min(plySafetyFactors)
+            failingPlies = [
+                i
+                for i in range(len(plySafetyFactors))
+                if abs((plySafetyFactors[i] - minSafetyFactor) / minSafetyFactor) < 1e-5
+            ]
+            for ply in failingPlies:
+                self.plyFailed[ply] = True
 
             # Save the load factor at which these ply failures will occur, which plies fail, and the laminate strain
             loadFactors.append(minSafetyFactor)
@@ -351,3 +367,31 @@ class laminate(object):
         self.plyFailed = startFailedPlies
 
         return loadFactors, plyFailures, laminateStrains
+
+    def computeMaterialUsage(self, panelDimensions):
+        """Compute the area of material required to cut out all the laminate plies
+
+        This calculation uses a very unrealistic method where the material used for each ply is the area of the b
+        ounding box around the rotated ply in xy space, thus there is no benefit gained from nesting plies.
+
+        Where L and W are the length and width of a ply, the area of the bounding box is:
+        A_{cut} = L*W + (W^2 + L^2)*sin(theta)*cos(theta)
+
+        Parameters
+        ----------
+        panelDimensions : array-like
+            A list/array/tuple constaining the length and width of the laminate
+
+        Returns
+        -------
+        requiredMaterial ; float
+            The area of material required to cut all plies
+        """
+        W = panelDimensions[0]
+        L = panelDimensions[1]
+        requiredMaterial = len(self.plies) * W * L
+
+        for theta in self.plyAngles:
+            requiredMaterial += (W ** 2 + L ** 2) * np.sin(np.deg2rad(abs(theta))) * np.cos(np.deg2rad(abs(theta)))
+
+        return requiredMaterial
